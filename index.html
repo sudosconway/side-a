@@ -830,7 +830,7 @@ $('threadInput').addEventListener('keydown', () => {});
 
 document.addEventListener('click', async (e) => {
   if(e.target.id === 'copyBtn'){
-    const text = state.tracks.map((t,i)=>`${i+1}. ${t.artist} – ${t.title}`).join('\n');
+    const text = state.tracks.map(t => t.url).filter(Boolean).join('\n');
     navigator.clipboard.writeText(text).then(()=>{
       e.target.textContent = 'Copied!';
       setTimeout(()=>{ e.target.textContent = 'Copy tracklist'; }, 1500);
