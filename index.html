@@ -441,15 +441,23 @@ async function getSpotifyToken(){
   if(state.token && Date.now() < state.tokenExpiry) return state.token;
   if(!state.clientId || !state.clientSecret) throw new Error('no-creds');
   const creds = btoa(`${state.clientId}:${state.clientSecret}`);
-  const res = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': 'Basic ' + creds
-    },
-    body: 'grant_type=client_credentials'
-  });
-  if(!res.ok) throw new Error('token-failed');
+  let res;
+  try{
+    res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + creds
+      },
+      body: 'grant_type=client_credentials'
+    });
+  }catch(networkErr){
+    throw new Error('token-network: ' + networkErr.message);
+  }
+  if(!res.ok){
+    const bodyText = await res.text().catch(()=> '');
+    throw new Error('token-failed: ' + res.status + ' ' + bodyText.slice(0,150));
+  }
   const json = await res.json();
   state.token = json.access_token;
   state.tokenExpiry = Date.now() + (json.expires_in - 60) * 1000;
@@ -741,18 +749,37 @@ $('analyzeBtn').onclick = async () => {
   renderScEmbeds(scLinks);
   state.scLinks = scLinks;
 
+  // pre-flight: get a Spotify token once so we can surface *why* search is unavailable,
+  // instead of silently falling back to search links for every single track.
+  let spotifyReady = true;
+  try{
+    await getSpotifyToken();
+  }catch(e){
+    spotifyReady = false;
+    let reason = 'Spotify search is unavailable right now.';
+    if(e.message === 'no-creds') reason = 'No Spotify Client ID/Secret saved — add them in "Spotify setup."';
+    else if(e.message.startsWith('token-network')) reason = 'Could not reach Spotify at all (network/CORS block).';
+    else if(e.message.startsWith('token-failed')) reason = 'Spotify rejected the login: ' + e.message.replace('token-failed: ', '') + ' — double-check the Client ID/Secret were copied correctly (no extra spaces).';
+    $('urlError').textContent = reason + ' Showing search links instead of live matches for now.';
+    $('urlError').style.display = 'block';
+  }
+
   for(const s of songs){
     if(!s.artist || !s.title) continue;
     let entry = { artist: s.artist, title: s.title, matched: false, art: null, url: null, uri: null };
-    try{
-      const found = await searchSpotify(s.artist, s.title);
-      entry.matched = true;
-      entry.art = found.art;
-      entry.url = found.url;
-      entry.uri = found.uri;
-      entry.title = found.name || s.title;
-      entry.artist = found.artistName || s.artist;
-    }catch(e){
+    if(spotifyReady){
+      try{
+        const found = await searchSpotify(s.artist, s.title);
+        entry.matched = true;
+        entry.art = found.art;
+        entry.url = found.url;
+        entry.uri = found.uri;
+        entry.title = found.name || s.title;
+        entry.artist = found.artistName || s.artist;
+      }catch(e){
+        entry.url = `https://open.spotify.com/search/${encodeURIComponent(s.artist + ' ' + s.title)}`;
+      }
+    } else {
       entry.url = `https://open.spotify.com/search/${encodeURIComponent(s.artist + ' ' + s.title)}`;
     }
     state.tracks.push(entry);
