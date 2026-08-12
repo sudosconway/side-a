@@ -188,15 +188,15 @@ textarea::placeholder{color:var(--muted);}
   </header>
 
   <div class="panel" id="quickAddPanel" style="display:none;margin-bottom:22px;">
-    <p class="panel-label">Already have Spotify links?</p>
-    <div class="url-note" style="margin-bottom:10px;">Paste Spotify track links (one per line) — from "Copy tracklist" in the chat version, or from anywhere. Skips extraction entirely and goes straight to login + playlist creation.</div>
-    <textarea id="quickAddInput" style="min-height:120px;" placeholder="https://open.spotify.com/track/...&#10;https://open.spotify.com/track/..."></textarea>
-    <button class="go-btn" id="quickAddBtn">Build playlist from these links →</button>
+    <p class="panel-label">Turn a tracklist into a playlist</p>
+    <div class="url-note" style="margin-bottom:10px;">Paste the "Copy tracklist" output from the chat version — plain "Artist – Title" lines, one per song. This page does the real Spotify lookup itself and builds the playlist. Real Spotify track links work too, if you have them.</div>
+    <textarea id="quickAddInput" style="min-height:120px;" placeholder="1. Limp Bizkit – Break Stuff&#10;2. GAYLE – abcdefu&#10;3. INJI – Hate Your Guts"></textarea>
+    <button class="go-btn" id="quickAddBtn">Find tracks & save to Spotify →</button>
     <div class="status-line" id="quickAddStatus"></div>
   </div>
 
   <div class="settings-panel" id="settingsPanel">
-    <h3>Connect your Spotify app</h3>
+    <h3 style="margin-top:0;">Connect your Spotify app</h3>
     <p>
       Create a free app at
       <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a>
@@ -351,22 +351,59 @@ if(IS_HOSTED){ $('quickAddPanel').style.display = 'flex'; }
 $('quickAddBtn').onclick = async () => {
   const raw = $('quickAddInput').value.trim();
   if(!raw){ return; }
-  const ids = [...new Set((raw.match(/track\/([a-zA-Z0-9]+)/g) || []).map(m => m.split('/')[1]))];
-  if(!ids.length){
-    $('quickAddStatus').textContent = 'No Spotify track links found in that text.';
+
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  const items = [];
+  for(const line of lines){
+    const urlMatch = line.match(/open\.spotify\.com\/track\/([a-zA-Z0-9]+)/);
+    if(urlMatch){ items.push({ type: 'uri', uri: `spotify:track:${urlMatch[1]}` }); continue; }
+    let cleaned = line.replace(/^\d+[\.\)]\s*/, '').replace(/https?:\/\/\S+/g, '').trim();
+    const parts = cleaned.split(/\s[–—-]\s/);
+    if(parts.length >= 2){
+      items.push({ type: 'search', artist: parts[0].trim(), title: parts.slice(1).join(' - ').trim() });
+    }
+  }
+  if(!items.length){
+    $('quickAddStatus').textContent = 'Could not read any tracks from that — one per line, either "Artist – Title" or a real Spotify link.';
     return;
   }
-  const tracks = ids.map(id => ({ uri: `spotify:track:${id}` }));
+
+  const needsSearch = items.some(i => i.type === 'search');
+  if(needsSearch && (!state.clientId || !state.clientSecret)){
+    $('quickAddStatus').textContent = 'Add your Spotify Client ID and Secret in "Spotify setup" first — needed to look these up.';
+    $('settingsPanel').classList.add('open');
+    return;
+  }
+
+  const resolved = [];
+  let searched = 0, matched = 0;
+  for(const item of items){
+    if(item.type === 'uri'){ resolved.push({ uri: item.uri }); continue; }
+    searched++;
+    $('quickAddStatus').textContent = `Looking up ${searched} of ${items.length}: ${item.artist} – ${item.title}…`;
+    try{
+      const found = await searchSpotify(item.artist, item.title);
+      resolved.push({ uri: found.uri, artist: found.artistName, title: found.name });
+      matched++;
+    }catch(e){ /* skip unmatched */ }
+  }
+
+  if(!resolved.length){
+    $('quickAddStatus').textContent = 'None of those matched on Spotify — try simplifying the artist/title text.';
+    return;
+  }
+  $('quickAddStatus').textContent = `Matched ${matched} of ${items.length}. Continuing to Spotify…`;
+
   const token = await getUserToken();
   if(token){
-    createSpotifyPlaylist(tracks);
+    createSpotifyPlaylist(resolved);
   } else {
     if(!state.clientId){
       $('quickAddStatus').textContent = 'Add your Spotify Client ID in "Spotify setup" first.';
       $('settingsPanel').classList.add('open');
       return;
     }
-    startSpotifyLogin(tracks);
+    startSpotifyLogin(resolved);
   }
 };
 
@@ -757,10 +794,10 @@ $('analyzeBtn').onclick = async () => {
   }catch(e){
     spotifyReady = false;
     let reason = 'Spotify search is unavailable right now.';
-    if(e.message === 'no-creds') reason = 'No Spotify Client ID/Secret saved — add them in "Spotify setup."';
-    else if(e.message.startsWith('token-network')) reason = 'Could not reach Spotify at all (network/CORS block).';
+    if(e.message === 'no-creds') reason = 'No Spotify Client ID/Secret saved here — that\'s fine, just use "Copy tracklist" below and paste it into your GitHub Pages version.';
+    else if(e.message.startsWith('token-network')) reason = "This chat can't reach Spotify at all — that's a platform limit here, not fixable with different credentials. Use \"Copy tracklist\" below and paste it into your GitHub Pages version, which does the real matching.";
     else if(e.message.startsWith('token-failed')) reason = 'Spotify rejected the login: ' + e.message.replace('token-failed: ', '') + ' — double-check the Client ID/Secret were copied correctly (no extra spaces).';
-    $('urlError').textContent = reason + ' Showing search links instead of live matches for now.';
+    $('urlError').textContent = reason;
     $('urlError').style.display = 'block';
   }
 
@@ -793,7 +830,7 @@ $('threadInput').addEventListener('keydown', () => {});
 
 document.addEventListener('click', async (e) => {
   if(e.target.id === 'copyBtn'){
-    const text = state.tracks.map((t,i)=>`${i+1}. ${t.artist} – ${t.title}${t.url ? '  '+t.url : ''}`).join('\n');
+    const text = state.tracks.map((t,i)=>`${i+1}. ${t.artist} – ${t.title}`).join('\n');
     navigator.clipboard.writeText(text).then(()=>{
       e.target.textContent = 'Copied!';
       setTimeout(()=>{ e.target.textContent = 'Copy tracklist'; }, 1500);
